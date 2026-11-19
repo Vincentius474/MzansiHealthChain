@@ -8,7 +8,7 @@ import { errMsg, short } from "@/lib/format";
 import { useSession } from "@/lib/hooks";
 import { clearSession, saveSession } from "@/lib/session";
 import { isLocalDemoEnabled } from "@/lib/demo";
-import { assertRegistryDeployed, connect, ensureDemoRequesterRegistered } from "@/lib/wallet";
+import { assertRegistryDeployed, connect, ensureDemoRequesterRegistered, registerPatientWallet } from "@/lib/wallet";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -26,8 +26,13 @@ export default function SettingsPage() {
     try {
       const wallet = await connect();
       const address = await wallet.getAddress();
-      if (role === "clinician") await ensureDemoRequesterRegistered(wallet);
-      else await assertRegistryDeployed(wallet);
+      if (role === "clinician") {
+      	await ensureDemoRequesterRegistered(wallet);
+      } else if (role === "patient") {
+ 	await registerPatientWallet(wallet);
+      } else {
+  	await assertRegistryDeployed(wallet);
+      }
       const { message } = await api.walletLinkNonce(address);
       const signature = await wallet.signMessage(message);
       const { token } = await api.linkWallet(address, signature);

@@ -1,4 +1,4 @@
-import { BrowserProvider, Contract, JsonRpcSigner } from "ethers";
+import { BrowserProvider, Contract, JsonRpcSigner, id } from "ethers";
 import { ADDR, REGISTRY_ABI, ROLE } from "./contracts";
 import { isLocalDemoEnabled } from "./demo";
 
@@ -75,3 +75,30 @@ export async function ensureDemoRequesterRegistered(signer: JsonRpcSigner) {
   const tx = await registry.registerLocalDemoClinician();
   await tx.wait();
 }
+
+
+export async function registerPatientWallet(signer: JsonRpcSigner) {
+  await assertRegistryDeployed(signer);
+
+  const registry = new Contract(ADDR.registry, REGISTRY_ABI, signer);
+  const patientAddress = await signer.getAddress();
+
+  const role = Number(await registry.roleOf(patientAddress));
+
+  if (role === ROLE.Patient) {
+    return null; // Already registered; continue wallet linking.
+  }
+
+  if (role !== ROLE.None) {
+    throw new Error("This wallet already has another registry role. Use a patient wallet.");
+  }
+
+  const randomId = crypto.randomUUID();
+  const pseudoId = id(randomId);
+
+  const tx = await registry.registerPatient(pseudoId);
+  await tx.wait();
+
+  return tx.hash;
+}
+
