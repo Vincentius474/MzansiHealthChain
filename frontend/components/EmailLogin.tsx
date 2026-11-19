@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { api } from "@/lib/api";
-import { isLocalDemoEnabled } from "@/lib/demo";
+import { isDemoAuthEnabled } from "@/lib/demo";
 import { errMsg } from "@/lib/format";
 import { assertRegistryDeployed, ensureDemoRequesterRegistered, hasWalletExtension, connect } from "@/lib/wallet";
 import { clearSession, saveSession } from "@/lib/session";
@@ -13,12 +13,12 @@ type Props = { role: LoginRole };
 
 const DEMO_ACCOUNTS: Record<LoginRole, { email: string; password: string }> = {
   patient: {
-    email: "owner@demo.mzansihealthchain.local",
-    password: "OwnerDemo2026!",
+    email: "participant@mzansihealthchain.com",
+    password: "",
   },
   clinician: {
-    email: "requester@demo.mzansihealthchain.local",
-    password: "RequesterDemo2026!",
+    email: "clinician@mzansihealthchain.com",
+    password: "",
   },
 };
 
@@ -58,7 +58,7 @@ export default function EmailLogin({ role }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [continueToSettings, setContinueToSettings] = useState(false);
-  const localLoginEnabled = isLocalDemoEnabled();
+  const demoAuthEnabled = isDemoAuthEnabled();
   const copy = ROLE_COPY[role];
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -107,9 +107,9 @@ export default function EmailLogin({ role }: Props) {
       </div>
 
       {error && <div className="notice error" role="alert">{error}</div>}
-      {!localLoginEnabled && (
+      {!demoAuthEnabled  && (
         <div className="notice" role="status">
-          Email/password demo accounts are enabled only on local Anvil. Configure the local development environment to sign in.
+          Email/password demo authentication is not enabled for this network or deployment.
         </div>
       )}
 
@@ -132,14 +132,14 @@ export default function EmailLogin({ role }: Props) {
             onChange={(event) => setCredentials({ ...credentials, password: event.target.value })}
           />
         </label>
-        <button disabled={busy || !localLoginEnabled}>
+        <button disabled={busy || !demoAuthEnabled}>
           {busy ? "Signing in…" : copy.button}
         </button>
       </form>
 
       {continueToSettings && <button className="secondary settings-continue" onClick={() => router.push("/settings")}>Continue to Settings</button>}
       <p className="muted wallet-note">
-        If Core Wallet or MetaMask is installed, the app will ask to connect it after sign-in. A new requester wallet can register as a clinician on local Anvil after you confirm a transaction. You can also connect later in Settings.
+        If Core Wallet or MetaMask is installed, the app will ask to connect it after sign-in. You can also connect later in Settings.
       </p>
       <p className="signin-links">
         <Link href="/">Choose another account type</Link>
