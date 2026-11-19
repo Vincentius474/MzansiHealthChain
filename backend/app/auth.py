@@ -1,4 +1,5 @@
-"""Local demo password login and wallet-signature authentication."""
+﻿
+"""Demo email/password and wallet-signature authentication."""
 import hashlib
 import hmac
 import secrets
@@ -15,14 +16,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import chain
 from .config import settings
 
-_nonces: dict[str, tuple[str, float]] = {}  # use Redis/Postgres in production
+_nonces: dict[str, tuple[str, float]] = {}
 bearer = HTTPBearer()
+
 _PASSWORD_SALT = secrets.token_bytes(16)
 _PASSWORD_ROUNDS = 310_000
-_OWNER_EMAIL = "owner@demo.mzansihealthchain.local"
-_OWNER_PASSWORD = "OwnerDemo2026!"
-_REQUESTER_EMAIL = "requester@demo.mzansihealthchain.local"
-_REQUESTER_PASSWORD = "RequesterDemo2026!"
+
+# Fixed demo identities and application roles.
+OWNER_EMAIL = "participant@mzansihealthchain.com"
+REQUESTER_EMAIL = "clinician@mzansihealthchain.com"
+OWNER_ROLE = "patient"
+REQUESTER_ROLE = "clinician"
 
 
 @dataclass(frozen=True)
@@ -42,47 +46,22 @@ def _password_digest(password: str) -> bytes:
 
 
 def _build_demo_accounts() -> dict[str, DemoAccount]:
-    accounts = (
-        DemoAccount(
-            _OWNER_EMAIL,
-            "patient",
-            _password_digest(_OWNER_PASSWORD),
-        ),
-        DemoAccount(
-            _REQUESTER_EMAIL,
-            "clinician",
-            _password_digest(_REQUESTER_PASSWORD),
-        ),
-    )
-    return {account.email: account for account in accounts if account.email}
-
-
-_DEMO_ACCOUNTS = _build_demo_accounts()
-
-
-def _remote_demo_accounts() -> dict[str, DemoAccount]:
     configured = (
-        (
-            settings.demo_owner_email,
-            settings.demo_owner_password,
-            "patient",
-        ),
-        (
-            settings.demo_requester_email,
-            settings.demo_requester_password,
-            "clinician",
-        ),
+        (OWNER_EMAIL, settings.demo_owner_password, OWNER_ROLE),
+        (REQUESTER_EMAIL, settings.demo_requester_password, REQUESTER_ROLE),
     )
 
-    return {
-        email.strip().casefold(): DemoAccount(
-            email=email.strip().casefold(),
-            role=role,
-            password_digest=_password_digest(password),
-        )
-        for email, password, role in configured
-        if email.strip() and password
-    }
+    accounts = {}
+    for email, password, role in configured:
+        if password:
+            normalized_email = email.strip().casefold()
+            accounts[normalized_email] = DemoAccount(
+                email=normalized_email,
+                role=role,
+                password_digest=_password_digest(password),
+            )
+
+    return accounts
 
 
 def _is_local_rpc() -> bool:
@@ -91,20 +70,27 @@ def _is_local_rpc() -> bool:
 
 
 def _demo_auth_is_enabled() -> bool:
-    return settings.demo_auth_enabled and _is_local_rpc()
+    if not settings.demo_auth_enabled:
+        return False
+
+    if _is_local_rpc():
+        return True
+
+    if not settings.demo_auth_allow_remote:
+        return False
+
+    try:
+        return _local_chain_id() == 43113
+    except Exception:
+        return False
 
 
 def _get_demo_accounts() -> dict[str, DemoAccount]:
-    if not settings.demo_auth_enabled:
+    if not _demo_auth_is_enabled():
         return {}
 
-    if _is_local_rpc():
-        return _DEMO_ACCOUNTS
+    return _build_demo_accounts()
 
-    if settings.demo_auth_allow_remote:
-        return _remote_demo_accounts()
-
-    return {}
 
 def _local_chain_id() -> int:
     return chain.w3.eth.chain_id
@@ -112,7 +98,12 @@ def _local_chain_id() -> int:
 
 def _new_token(subject: str, role: str, **claims) -> str:
     return jwt.encode(
-        {"sub": subject, "role": role, "exp": int(time.time()) + 3600, **claims},
+        {
+            "sub": subject,
+            "role": role,
+            "exp": int(time.time()) + 3600,
+            **claims,
+        },
         settings.jwt_secret,
         algorithm="HS256",
     )
@@ -122,7 +113,10 @@ def verify_email_login(email: str, password: str, role: str) -> str:
     accounts = _get_demo_accounts()
 
     if not accounts:
-        raise HTTPException(403, "Email/password demo sign-in is disabled.")
+        raise HTTPException(
+            403,
+            "Email/password demo sign-in is disabled.",
+        )
 
     account = accounts.get(email.strip().casefold())
     digest = _password_digest(password)
@@ -132,7 +126,10 @@ def verify_email_login(email: str, password: str, role: str) -> str:
         or not hmac.compare_digest(digest, account.password_digest)
         or account.role != role
     ):
-        raise HTTPException(401, "Invalid email, password, or account type.")
+        raise HTTPException(
+            401,
+            "Invalid email, password, or account type.",
+        )
 
     return _new_token(
         account.email,
@@ -142,26 +139,42 @@ def verify_email_login(email: str, password: str, role: str) -> str:
         wallet=None,
     )
 
+
 def _demo_wallet_account(user: dict, address: str) -> DemoAccount:
     if user.get("auth_method") != "password":
-        raise HTTPException(403, "Wallet linking is available only for demo accounts.")
+        raise HTTPException(
+            403,
+            "Wallet linking is available only for demo accounts.",
+        )
 
     email = str(user.get("email", "")).strip().casefold()
     account = _get_demo_accounts().get(email)
 
     if not account:
-        raise HTTPException(403, "No demo account is configured for this user.")
+        raise HTTPException(
+            403,
+            "No demo account is configured for this user.",
+        )
 
     chain_id = _local_chain_id()
 
     if _is_local_rpc():
         if chain_id != 31337:
-            raise HTTPException(403, "Demo wallet linking requires local Anvil chain 31337.")
+            raise HTTPException(
+                403,
+                "Demo wallet linking requires local Anvil chain 31337.",
+            )
     elif settings.demo_auth_allow_remote:
         if chain_id != 43113:
-            raise HTTPException(403, "Remote demo wallet linking requires Avalanche Fuji.")
+            raise HTTPException(
+                403,
+                "Remote demo wallet linking requires Avalanche Fuji.",
+            )
     else:
-        raise HTTPException(403, "Remote demo wallet linking is disabled.")
+        raise HTTPException(
+            403,
+            "Remote demo wallet linking is disabled.",
+        )
 
     if chain.role_of(address) != account.role:
         raise HTTPException(
@@ -171,13 +184,17 @@ def _demo_wallet_account(user: dict, address: str) -> DemoAccount:
 
     return account
 
+
 def issue_wallet_link_nonce(user: dict, address: str) -> str:
     account = _demo_wallet_account(user, address)
     email = account.email
 
     nonce = secrets.token_hex(16)
     key = f"link:{email}:{address.lower()}"
-    message = f"Link wallet {address.lower()} to MzansiHealthChain account {email}. Nonce: {nonce}"
+    message = (
+        f"Link wallet {address.lower()} to "
+        f"MzansiHealthChain account {email}. Nonce: {nonce}"
+    )
     _nonces[key] = (nonce, time.time() + 300)
     return message
 
@@ -188,11 +205,19 @@ def verify_wallet_link(user: dict, address: str, signature: str) -> str:
 
     key = f"link:{email}:{address.lower()}"
     entry = _nonces.pop(key, None)
+
     if not entry or entry[1] < time.time():
         raise HTTPException(401, "Wallet-link nonce missing or expired.")
 
-    message = f"Link wallet {address.lower()} to MzansiHealthChain account {email}. Nonce: {entry[0]}"
-    recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
+    message = (
+        f"Link wallet {address.lower()} to "
+        f"MzansiHealthChain account {email}. Nonce: {entry[0]}"
+    )
+    recovered = Account.recover_message(
+        encode_defunct(text=message),
+        signature=signature,
+    )
+
     if recovered.lower() != address.lower():
         raise HTTPException(401, "Invalid wallet-link signature.")
 
@@ -207,8 +232,13 @@ def verify_wallet_link(user: dict, address: str, signature: str) -> str:
 
 def linked_wallet(user: dict) -> str:
     wallet = user.get("wallet")
+
     if not wallet:
-        raise HTTPException(409, "Connect your Core Wallet in Settings before using this feature.")
+        raise HTTPException(
+            409,
+            "Connect your Core Wallet in Settings before using this feature.",
+        )
+
     return str(wallet)
 
 
@@ -224,19 +254,39 @@ def issue_nonce(address: str) -> str:
 
 def verify_login(address: str, signature: str) -> str:
     entry = _nonces.pop(address.lower(), None)
+
     if not entry or entry[1] < time.time():
         raise HTTPException(401, "nonce missing or expired")
-    recovered = Account.recover_message(encode_defunct(text=login_message(entry[0])), signature=signature)
+
+    recovered = Account.recover_message(
+        encode_defunct(text=login_message(entry[0])),
+        signature=signature,
+    )
+
     if recovered.lower() != address.lower():
         raise HTTPException(401, "bad signature")
+
     role = chain.role_of(address)
+
     if role == "none":
         raise HTTPException(403, "wallet not registered on-chain")
-    return _new_token(address.lower(), role, auth_method="wallet", wallet=address.lower())
+
+    return _new_token(
+        address.lower(),
+        role,
+        auth_method="wallet",
+        wallet=address.lower(),
+    )
 
 
-def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer)) -> dict:
+def current_user(
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+) -> dict:
     try:
-        return jwt.decode(cred.credentials, settings.jwt_secret, algorithms=["HS256"])
+        return jwt.decode(
+            cred.credentials,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+        )
     except jwt.PyJWTError:
         raise HTTPException(401, "invalid token")

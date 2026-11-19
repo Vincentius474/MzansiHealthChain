@@ -11,6 +11,20 @@ from app.main import app
 P = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 D = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
+PATIENT_EMAIL = "participant@mzansihealthchain.com"
+PATIENT_PASSWORD = "Test-Only-Patient-Password!"
+
+def configure_patient_demo_auth(monkeypatch):
+    monkeypatch.setattr(auth.settings, "demo_auth_enabled", True)
+    monkeypatch.setattr(auth.settings, "demo_auth_allow_remote", False)
+    monkeypatch.setattr(
+        auth.settings, "demo_owner_password", PATIENT_PASSWORD
+    )
+    monkeypatch.setattr(
+        auth.settings, "demo_requester_password",
+        "Test-Only-Clinician-Password!"
+    )
+
 
 @pytest.fixture
 def client():
@@ -69,41 +83,67 @@ def test_me(client):
     assert client.get("/auth/me").json() == {
         "email": None, "address": D.lower(), "role": "clinician", "wallet_linked": True,
     }
+def test_email_login_creates_unlinked_session(client, monkeypatch):
+    configure_patient_demo_auth(monkeypatch)
 
-
-def test_email_login_creates_unlinked_session(client):
     response = client.post("/auth/email-login", json={
-        "email": "owner@demo.mzansihealthchain.local",
-        "password": "OwnerDemo2026!",
+        "email": PATIENT_EMAIL,
+        "password": PATIENT_PASSWORD,
         "role": "patient",
     })
     assert response.status_code == 200
-    me = client.get("/auth/me", headers={"Authorization": f"Bearer {response.json()['token']}"})
+
+    me = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {response.json()['token']}"},
+    )
     assert me.json() == {
-        "email": "owner@demo.mzansihealthchain.local",
+        "email": PATIENT_EMAIL,
         "address": None,
         "role": "patient",
         "wallet_linked": False,
     }
 
 
-def test_unlinked_session_cannot_access_chain_data(client):
-    token = auth.verify_email_login("owner@demo.mzansihealthchain.local", "OwnerDemo2026!", "patient")
-    response = client.get(f"/audit/{P}", headers={"Authorization": f"Bearer {token}"})
+def test_unlinked_session_cannot_access_chain_data(client, monkeypatch):
+    configure_patient_demo_auth(monkeypatch)
+
+    token = auth.verify_email_login(
+        PATIENT_EMAIL, PATIENT_PASSWORD, "patient"
+    )
+    response = client.get(
+        f"/audit/{P}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert response.status_code == 409
     assert "Core Wallet in Settings" in response.json()["detail"]
 
 
 def test_wallet_can_be_linked_from_settings(client, monkeypatch):
-    account = Account.from_key("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d")
-    token = auth.verify_email_login("owner@demo.mzansihealthchain.local", "OwnerDemo2026!", "patient")
+    configure_patient_demo_auth(monkeypatch)
+
+    account = Account.from_key(
+        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+    )
+    token = auth.verify_email_login(
+        PATIENT_EMAIL, PATIENT_PASSWORD, "patient"
+    )
     headers = {"Authorization": f"Bearer {token}"}
+
     monkeypatch.setattr(auth, "_local_chain_id", lambda: 31337)
     monkeypatch.setattr(auth.chain, "role_of", lambda address: "patient")
 
-    nonce = client.post("/auth/wallet/nonce", json={"address": account.address}, headers=headers)
+    nonce = client.post(
+        "/auth/wallet/nonce",
+        json={"address": account.address},
+        headers=headers,
+    )
     assert nonce.status_code == 200
-    signature = account.sign_message(encode_defunct(text=nonce.json()["message"])).signature.hex()
+
+    signature = account.sign_message(
+        encode_defunct(text=nonce.json()["message"])
+    ).signature.hex()
+
     linked = client.post(
         "/auth/wallet/link",
         json={"address": account.address, "signature": signature},
@@ -111,10 +151,12 @@ def test_wallet_can_be_linked_from_settings(client, monkeypatch):
     )
     assert linked.status_code == 200
 
-    me = client.get("/auth/me", headers={"Authorization": f"Bearer {linked.json()['token']}"})
+    me = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {linked.json()['token']}"},
+    )
     assert me.json()["address"] == account.address.lower()
     assert me.json()["wallet_linked"] is True
-
 
 def test_records_are_provider_only(client):
     as_user(P, "patient")
