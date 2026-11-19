@@ -8,7 +8,9 @@ from typing import Any
 
 from . import crypto
 
-DB_PATH = Path(__file__).resolve().parents[1] / "data" / "workflow.sqlite3"
+from .config import settings
+
+DB_PATH = Path(settings.data_dir) / "workflow.sqlite3"
 CATEGORIES = (
     "allergies",
     "diagnoses",
