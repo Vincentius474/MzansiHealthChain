@@ -158,3 +158,71 @@ def test_linked_wallet_requires_a_wallet_claim():
     with pytest.raises(HTTPException) as e:
         auth.linked_wallet({"role": "patient"})
     assert e.value.status_code == 409
+
+
+def test_remote_demo_email_login_succeeds_on_fuji(monkeypatch):
+    monkeypatch.setattr(
+        auth.settings, "rpc_url",
+        "https://api.avax-test.network/ext/bc/C/rpc",
+    )
+    monkeypatch.setattr(auth.settings, "demo_auth_enabled", True)
+    monkeypatch.setattr(auth.settings, "demo_auth_allow_remote", True)
+    monkeypatch.setattr(auth.settings, "demo_owner_email", "fuji-owner@example.test")
+    monkeypatch.setattr(auth.settings, "demo_owner_password", "Test-Only-Owner-Password!")
+
+    token = auth.verify_email_login(
+        "fuji-owner@example.test",
+        "Test-Only-Owner-Password!",
+        "patient",
+    )
+    claims = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
+
+    assert claims["sub"] == "fuji-owner@example.test"
+    assert claims["role"] == "patient"
+    assert claims["wallet"] is None
+
+
+def test_remote_demo_email_login_rejects_wrong_password(monkeypatch):
+    monkeypatch.setattr(
+        auth.settings, "rpc_url",
+        "https://api.avax-test.network/ext/bc/C/rpc",
+    )
+    monkeypatch.setattr(auth.settings, "demo_auth_enabled", True)
+    monkeypatch.setattr(auth.settings, "demo_auth_allow_remote", True)
+    monkeypatch.setattr(auth.settings, "demo_owner_email", "fuji-owner@example.test")
+    monkeypatch.setattr(auth.settings, "demo_owner_password", "Test-Only-Owner-Password!")
+
+    with pytest.raises(HTTPException) as e:
+        auth.verify_email_login(
+            "fuji-owner@example.test",
+            "incorrect-password",
+            "patient",
+        )
+
+    assert e.value.status_code == 401
+
+
+def test_remote_demo_wallet_link_requires_fuji_role(monkeypatch):
+    monkeypatch.setattr(
+        auth.settings, "rpc_url",
+        "https://api.avax-test.network/ext/bc/C/rpc",
+    )
+    monkeypatch.setattr(auth.settings, "demo_auth_enabled", True)
+    monkeypatch.setattr(auth.settings, "demo_auth_allow_remote", True)
+    monkeypatch.setattr(auth.settings, "demo_owner_email", "fuji-owner@example.test")
+    monkeypatch.setattr(auth.settings, "demo_owner_password", "Test-Only-Owner-Password!")
+    monkeypatch.setattr(auth, "_local_chain_id", lambda: 43113)
+    monkeypatch.setattr(auth.chain, "role_of", lambda address: "clinician")
+
+    user = {
+        "email": "fuji-owner@example.test",
+        "auth_method": "password",
+    }
+
+    account = Account.create()
+
+    with pytest.raises(HTTPException) as e:
+        auth.issue_wallet_link_nonce(user, account.address)
+
+    assert e.value.status_code == 403
+    assert "patient" in e.value.detail

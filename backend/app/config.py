@@ -35,5 +35,15 @@ class Settings(BaseSettings):
 
     demo_auth_enabled: bool = False
 
+    # Remote demo authentication is disabled unless explicitly enabled.
+    demo_auth_allow_remote: bool = False
+
+    # Remote demo account credentials (configured through environment variables).
+    demo_owner_email: str = ""
+    demo_owner_password: str = ""
+
+    demo_requester_email: str = ""
+    demo_requester_password: str = ""
+
 
 settings = Settings()

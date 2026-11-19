@@ -33,7 +33,12 @@ class DemoAccount:
 
 
 def _password_digest(password: str) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), _PASSWORD_SALT, _PASSWORD_ROUNDS)
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        _PASSWORD_SALT,
+        _PASSWORD_ROUNDS,
+    )
 
 
 def _build_demo_accounts() -> dict[str, DemoAccount]:
@@ -55,10 +60,51 @@ def _build_demo_accounts() -> dict[str, DemoAccount]:
 _DEMO_ACCOUNTS = _build_demo_accounts()
 
 
-def _demo_auth_is_enabled() -> bool:
-    hostname = urlsplit(settings.rpc_url).hostname
-    return settings.demo_auth_enabled and hostname in ("localhost", "127.0.0.1", "::1")
+def _remote_demo_accounts() -> dict[str, DemoAccount]:
+    configured = (
+        (
+            settings.demo_owner_email,
+            settings.demo_owner_password,
+            "patient",
+        ),
+        (
+            settings.demo_requester_email,
+            settings.demo_requester_password,
+            "clinician",
+        ),
+    )
 
+    return {
+        email.strip().casefold(): DemoAccount(
+            email=email.strip().casefold(),
+            role=role,
+            password_digest=_password_digest(password),
+        )
+        for email, password, role in configured
+        if email.strip() and password
+    }
+
+
+def _is_local_rpc() -> bool:
+    hostname = urlsplit(settings.rpc_url).hostname
+    return hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def _demo_auth_is_enabled() -> bool:
+    return settings.demo_auth_enabled and _is_local_rpc()
+
+
+def _get_demo_accounts() -> dict[str, DemoAccount]:
+    if not settings.demo_auth_enabled:
+        return {}
+
+    if _is_local_rpc():
+        return _DEMO_ACCOUNTS
+
+    if settings.demo_auth_allow_remote:
+        return _remote_demo_accounts()
+
+    return {}
 
 def _local_chain_id() -> int:
     return chain.w3.eth.chain_id
@@ -73,12 +119,19 @@ def _new_token(subject: str, role: str, **claims) -> str:
 
 
 def verify_email_login(email: str, password: str, role: str) -> str:
-    if not _demo_auth_is_enabled():
-        raise HTTPException(403, "Email/password demo sign-in is available only with local Anvil.")
+    accounts = _get_demo_accounts()
 
-    account = _DEMO_ACCOUNTS.get(email.strip().casefold())
+    if not accounts:
+        raise HTTPException(403, "Email/password demo sign-in is disabled.")
+
+    account = accounts.get(email.strip().casefold())
     digest = _password_digest(password)
-    if not account or not hmac.compare_digest(digest, account.password_digest) or account.role != role:
+
+    if (
+        not account
+        or not hmac.compare_digest(digest, account.password_digest)
+        or account.role != role
+    ):
         raise HTTPException(401, "Invalid email, password, or account type.")
 
     return _new_token(
@@ -89,20 +142,34 @@ def verify_email_login(email: str, password: str, role: str) -> str:
         wallet=None,
     )
 
-
 def _demo_wallet_account(user: dict, address: str) -> DemoAccount:
-    if not _demo_auth_is_enabled() or user.get("auth_method") != "password":
-        raise HTTPException(403, "Wallet linking is available only for local demo accounts.")
-    email = str(user.get("email", "")).strip().casefold()
-    account = _DEMO_ACCOUNTS.get(email)
-    if not account:
-        raise HTTPException(403, "No demo wallet is configured for this account.")
-    if _local_chain_id() != 31337:
-        raise HTTPException(403, "Demo wallet linking requires local Anvil chain 31337.")
-    if chain.role_of(address) != account.role:
-        raise HTTPException(403, f"Connect a wallet registered as a {account.role} on local Anvil.")
-    return account
+    if user.get("auth_method") != "password":
+        raise HTTPException(403, "Wallet linking is available only for demo accounts.")
 
+    email = str(user.get("email", "")).strip().casefold()
+    account = _get_demo_accounts().get(email)
+
+    if not account:
+        raise HTTPException(403, "No demo account is configured for this user.")
+
+    chain_id = _local_chain_id()
+
+    if _is_local_rpc():
+        if chain_id != 31337:
+            raise HTTPException(403, "Demo wallet linking requires local Anvil chain 31337.")
+    elif settings.demo_auth_allow_remote:
+        if chain_id != 43113:
+            raise HTTPException(403, "Remote demo wallet linking requires Avalanche Fuji.")
+    else:
+        raise HTTPException(403, "Remote demo wallet linking is disabled.")
+
+    if chain.role_of(address) != account.role:
+        raise HTTPException(
+            403,
+            f"Connect a wallet registered as a {account.role} on the configured chain.",
+        )
+
+    return account
 
 def issue_wallet_link_nonce(user: dict, address: str) -> str:
     account = _demo_wallet_account(user, address)
