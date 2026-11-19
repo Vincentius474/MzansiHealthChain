@@ -14,6 +14,7 @@ export const REGISTRY_ABI = [
   "function registerLocalDemoClinician()",
   "function registerProvider(address provider, uint8 role)",
   "function roleOf(address) view returns (uint8)",
+  "function transferAdmin(address newAdmin)",
 ];
 export const CONSENT_ABI = [
   "function grant(address provider, uint64 expiry)",
