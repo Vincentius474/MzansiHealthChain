@@ -108,19 +108,41 @@ def _format_audit_rows(logs: list[dict], limit: int) -> list[dict]:
     return out
 
 
+def _get_audit_logs(from_block: int, filters: dict) -> list[dict]:
+    """Fetch audit events in batches of at most 100 blocks."""
+    latest_block = w3.eth.block_number
+    logs = []
+
+    start = from_block
+
+    while start <= latest_block:
+        end = min(start + 99, latest_block)
+
+        batch = audit.events.AccessLogged().get_logs(
+            from_block=start,
+            to_block=end,
+            argument_filters=filters,
+        )
+
+        logs.extend(batch)
+        start = end + 1
+
+    return logs
+
+
 def audit_trail(patient: str, limit: int = 100) -> list[dict]:
     """Newest-first access events for one patient, read from AuditLog events."""
-    logs = audit.events.AccessLogged().get_logs(
-        from_block=settings.audit_from_block,
-        argument_filters={"patient": Web3.to_checksum_address(patient)},
+    logs = _get_audit_logs(
+        settings.audit_from_block,
+        {"patient": Web3.to_checksum_address(patient)},
     )
     return _format_audit_rows(logs, limit)
 
 
 def provider_audit_trail(provider: str, limit: int = 100) -> list[dict]:
     """Newest-first actions performed by one provider."""
-    logs = audit.events.AccessLogged().get_logs(
-        from_block=settings.audit_from_block,
-        argument_filters={"provider": Web3.to_checksum_address(provider)},
+    logs = _get_audit_logs(
+        settings.audit_from_block,
+        {"provider": Web3.to_checksum_address(provider)},
     )
     return _format_audit_rows(logs, limit)
