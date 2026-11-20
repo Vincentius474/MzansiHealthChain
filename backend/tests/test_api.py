@@ -320,6 +320,63 @@ def test_owner_can_review_and_export_decrypted_records(client, monkeypatch):
     assert export.json()["records"][0]["title"] == "Personal note"
 
 
+def test_owner_records_continue_after_missing_encrypted_file(client, monkeypatch):
+    as_user(P, "patient")
+
+    valid_blob, valid_digest = crypto.encrypt(
+        b"Synthetic follow-up note.",
+        P,
+    )
+
+    missing_record = {
+        "id": 0,
+        "hash": "ab" * 32,
+        "ref": "missing-owner-record",
+        "added_by": P,
+        "timestamp": 20,
+    }
+    valid_record = {
+        "id": 1,
+        "hash": valid_digest,
+        "ref": "valid-owner-record",
+        "added_by": P,
+        "timestamp": 21,
+    }
+
+    monkeypatch.setattr(
+        "app.main.chain.get_own_records",
+        lambda address: [missing_record, valid_record],
+    )
+
+    def get_object(ref):
+        if ref == "missing-owner-record":
+            from app.storage import StorageObjectNotFound
+            raise StorageObjectNotFound("Missing test object")
+        if ref == "valid-owner-record":
+            return valid_blob
+        raise AssertionError(f"Unexpected storage reference: {ref}")
+
+    monkeypatch.setattr("app.main.storage.get", get_object)
+
+    response = client.get("/owner/records")
+
+    assert response.status_code == 200
+    records = response.json()
+    assert len(records) == 2
+
+    assert records[0]["id"] == 0
+    assert records[0]["available"] is False
+    assert records[0]["content"] == ""
+    assert records[0]["availability_issue"] == (
+        "Encrypted file unavailable in storage"
+    )
+
+    assert records[1]["id"] == 1
+    assert records[1]["available"] is True
+    assert records[1]["content"] == "Synthetic follow-up note."
+    assert records[1]["availability_issue"] is None
+
+
 def test_owner_can_flag_record_and_author_can_review_flag(client, monkeypatch):
     approve_scope(P, D, categories=("allergies",))
     blob, digest = crypto.encrypt(b"Allergy note.", P)

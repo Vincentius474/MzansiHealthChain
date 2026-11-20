@@ -94,7 +94,11 @@ export type RecordMeta = {
   added_by: string;
   timestamp: number;
 };
-export type OwnerRecord = RecordMeta & { content: string };
+export type OwnerRecord = RecordMeta & {
+  content: string;
+  available?: boolean;
+  availability_issue?: string | null;
+};
 export type AuditEntry = {
   patient: string; provider: string; record_id: number | null; action: string; timestamp: number; tx: string;
 };

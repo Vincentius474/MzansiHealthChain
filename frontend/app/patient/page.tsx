@@ -243,10 +243,23 @@ export default function PatientPage() {
                   <span className="chip">{CATEGORY_LABELS[record.category]}</span>{" "}
                   · {record.record_date} · Added by <code>{short(record.added_by)}</code>
                 </p>
-                <details>
-                  <summary>Review record</summary>
-                  <pre>{record.content}</pre>
-                </details>
+                {record.available === false ? (
+                  <div className="notice" role="status">
+                    <strong>Record unavailable</strong>
+                    <p>
+                      {record.availability_issue ??
+                        "The encrypted record cannot currently be retrieved."}
+                    </p>
+                    <p className="muted">
+                      The blockchain entry is preserved, but its contents cannot be displayed.
+                    </p>
+                  </div>
+                ) : (
+                  <details>
+                    <summary>Review record</summary>
+                    <pre>{record.content}</pre>
+                  </details>
+                )}
                 <label>Flag an inaccuracy or concern
                   <textarea
                     className="compact"

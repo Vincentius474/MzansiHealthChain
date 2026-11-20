@@ -13,7 +13,7 @@ from cryptography.exceptions import InvalidTag
 
 from . import agents, auth, chain, crypto, workflow
 from .config import settings
-from .storage import storage
+from .storage import StorageObjectNotFound, storage
 
 app = FastAPI(title="MzansiHealthChainAPI")
 local_rpc_host = urlsplit(settings.rpc_url).hostname
@@ -373,16 +373,60 @@ def owner_records(user=Depends(auth.current_user)):
     wallet = auth.linked_wallet(user)
     _require_patient(user, wallet)
     result = []
+
     for row in chain.get_own_records(wallet):
         metadata = _record_metadata(row, wallet)
-        blob = storage.get(row["ref"])
+
+        try:
+            blob = storage.get(row["ref"])
+        except StorageObjectNotFound:
+            logger.warning(
+                "Owner record %s has no encrypted object in storage",
+                row["id"],
+            )
+            result.append({
+                **metadata,
+                "content": "",
+                "available": False,
+                "availability_issue": "Encrypted file unavailable in storage",
+            })
+            continue
+
         if crypto.sha256_hex(blob) != row["hash"].removeprefix("0x"):
-            raise HTTPException(500, f"Record {row['id']} failed its integrity check.")
+            logger.warning(
+                "Owner record %s failed its integrity check",
+                row["id"],
+            )
+            result.append({
+                **metadata,
+                "content": "",
+                "available": False,
+                "availability_issue": "Integrity verification failed",
+            })
+            continue
+
         try:
             content = crypto.decrypt(blob, wallet).decode("utf-8")
         except (InvalidTag, ValueError, UnicodeDecodeError):
-            raise HTTPException(500, f"Record {row['id']} could not be decrypted.")
-        result.append({**metadata, "content": content})
+            logger.warning(
+                "Owner record %s could not be decrypted",
+                row["id"],
+            )
+            result.append({
+                **metadata,
+                "content": "",
+                "available": False,
+                "availability_issue": "Record could not be decrypted",
+            })
+            continue
+
+        result.append({
+            **metadata,
+            "content": content,
+            "available": True,
+            "availability_issue": None,
+        })
+
     return result
 
 
