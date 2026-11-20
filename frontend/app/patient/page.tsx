@@ -30,6 +30,7 @@ export default function PatientPage() {
   const [category, setCategory] = useState<RecordCategory>("visit_notes");
   const [recordDate, setRecordDate] = useState(new Date().toISOString().slice(0, 10));
   const [content, setContent] = useState("");
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -106,19 +107,73 @@ export default function PatientPage() {
 
   async function submitRecord(event: FormEvent) {
     event.preventDefault();
-    if (!session?.address || !signer) return setError("Connect your registered wallet in Settings first.");
-    if (!title.trim() || !content.trim()) return setError("Enter a title and record content.");
+
+    if (!session?.address || !signer) {
+      return setError("Connect your registered wallet in Settings first.");
+    }
+
+    if (!title.trim() || !content.trim()) {
+      return setError("Enter a title and record content.");
+    }
+
+    if (attachment) {
+      if (attachment.size > 10 * 1024 * 1024) {
+        return setError("PDF attachments cannot exceed 10 MB.");
+      }
+
+      if (attachment.type !== "application/pdf") {
+        return setError("Please select a PDF file.");
+      }
+    }
+
     await run("upload", async () => {
-      const encrypted = await api.encryptRecord(session.address!, content, {
+      const metadata = {
         title: title.trim(),
         category,
         record_date: recordDate,
-      });
+      };
+
+      const encrypted = attachment
+        ? await api.encryptRecordWithAttachment(
+            session.address!,
+            content,
+            metadata,
+            attachment,
+          )
+        : await api.encryptRecord(session.address!, content, metadata);
+
       const access = new Contract(ADDR.access, ACCESS_ABI, signer);
-      await (await access.addRecord(session.address, encrypted.hash, encrypted.ref)).wait();
+      await (
+        await access.addRecord(session.address, encrypted.hash, encrypted.ref)
+      ).wait();
+
       setTitle("");
       setContent("");
+      setAttachment(null);
     }, "Your encrypted record was added to the ledger.");
+  }
+
+  async function downloadAttachment(record: OwnerRecord) {
+    if (!session?.address || !record.attachment) return;
+
+    await run(`download-${record.id}`, async () => {
+      const blob = await api.downloadRecordAttachment(
+        session.address!,
+        record.id,
+      );
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = record.attachment!.filename;
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "PDF attachment downloaded.");
   }
 
   async function approve(request: AccessRequest) {
@@ -260,6 +315,23 @@ export default function PatientPage() {
                     <pre>{record.content}</pre>
                   </details>
                 )}
+                {record.available !== false && record.attachment && (
+                  <div className="inline-actions">
+                    <span className="chip">
+                      PDF: {record.attachment.filename}
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy !== null}
+                      onClick={() => void downloadAttachment(record)}
+                    >
+                      {busy === `download-${record.id}`
+                        ? "Downloading…"
+                        : "Download PDF"}
+                    </button>
+                  </div>
+                )}
                 <label>Flag an inaccuracy or concern
                   <textarea
                     className="compact"
@@ -298,8 +370,30 @@ export default function PatientPage() {
             </label>
           </div>
           <label>Record details
-            <textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={100000} required />
-            <small>Content is encrypted before storage. You’ll confirm the append-only transaction in your wallet.</small>
+            <textarea
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              maxLength={100000}
+              required
+            />
+            <small>
+              Content is encrypted before storage. You’ll confirm the append-only
+              transaction in your wallet.
+            </small>
+          </label>
+
+          <label>Attach PDF (optional)
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(event) =>
+                setAttachment(event.target.files?.[0] ?? null)
+              }
+            />
+            <small>
+              Maximum size: 10 MB.
+              {attachment ? ` Selected: ${attachment.name}` : ""}
+            </small>
           </label>
           <button disabled={!signer || busy !== null}>{busy === "upload" ? "Confirm in your wallet…" : "Encrypt and add record"}</button>
         </form>

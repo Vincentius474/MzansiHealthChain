@@ -4,14 +4,14 @@ import logging
 import time
 from datetime import date, datetime, timezone
 from typing import Literal
-from urllib.parse import urlsplit
-from fastapi import Depends, FastAPI, HTTPException, Response
+from urllib.parse import quote, urlsplit
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from web3 import Web3
 from cryptography.exceptions import InvalidTag
 
-from . import agents, auth, chain, crypto, workflow
+from . import agents, auth, chain, crypto, record_payload, workflow
 from .config import settings
 from .storage import StorageObjectNotFound, storage
 
@@ -245,6 +245,62 @@ def encrypt_record(req: UploadReq, user=Depends(auth.current_user)):
     return {"hash": "0x" + digest, "ref": ref}
 
 
+@app.post("/records/encrypt-with-attachment")
+async def encrypt_record_with_attachment(
+    patient: str = Form(...),
+    content: str = Form(...),
+    title: str = Form(...),
+    category: str = Form(...),
+    record_date: date = Form(...),
+    file: UploadFile = File(...),
+    user=Depends(auth.current_user),
+):
+    """Encrypt a clinical record and its PDF as one authenticated object."""
+    wallet = auth.linked_wallet(user)
+    _require_address(patient)
+
+    if not content.strip() or len(content) > 100_000:
+        raise HTTPException(422, "Record content must contain 1 to 100,000 characters.")
+    if category not in workflow.CATEGORIES:
+        raise HTTPException(422, "invalid record category")
+    title = title.strip()
+    if not title or len(title) > 120:
+        raise HTTPException(422, "Record title must contain 1 to 120 characters.")
+
+    if user["role"] == "patient":
+        if wallet.lower() != patient.lower():
+            raise HTTPException(403, "Data owners can only upload their own records.")
+    elif user["role"] in ("clinician", "facility"):
+        _scoped_records(wallet, patient)
+        if category not in workflow.allowed_categories(patient, wallet):
+            _audit_denied(patient, wallet)
+            raise HTTPException(403, "Your approved access does not include this record category.")
+        if not chain.can_access(wallet, patient):
+            raise HTTPException(403, "The data owner's on-chain consent is not active.")
+    else:
+        raise HTTPException(403, "This account cannot upload records.")
+
+    pdf_bytes = await file.read(record_payload.MAX_PDF_BYTES + 1)
+    await file.close()
+
+    if len(pdf_bytes) > record_payload.MAX_PDF_BYTES:
+        raise HTTPException(413, "PDF attachment exceeds the 10 MB limit.")
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise HTTPException(422, "The attachment must be a valid PDF file.")
+
+    filename = (file.filename or "attachment.pdf").replace("\\", "/").split("/")[-1]
+    filename = "".join(c for c in filename if c.isprintable() and c not in '\r\n')
+    filename = filename[:180].strip() or "attachment.pdf"
+
+    payload = record_payload.encode_record(content, pdf_bytes, filename)
+    blob, digest = crypto.encrypt(payload, patient)
+    ref = storage.put(blob)
+    workflow.save_record_metadata(
+        digest, patient, category, title, record_date.isoformat(), wallet,
+    )
+    return {"hash": "0x" + digest, "ref": ref}
+
+
 @app.post("/agent/summary")
 async def summary(req: SummaryReq, user=Depends(auth.current_user)):
     if user["role"] not in ("clinician", "facility"):
@@ -406,7 +462,9 @@ def owner_records(user=Depends(auth.current_user)):
             continue
 
         try:
-            content = crypto.decrypt(blob, wallet).decode("utf-8")
+            decoded = record_payload.decode_record(crypto.decrypt(blob, wallet))
+            content = decoded["content"]
+            attachment = decoded["attachment"]
         except (InvalidTag, ValueError, UnicodeDecodeError):
             logger.warning(
                 "Owner record %s could not be decrypted",
@@ -423,6 +481,7 @@ def owner_records(user=Depends(auth.current_user)):
         result.append({
             **metadata,
             "content": content,
+            "attachment": attachment,
             "available": True,
             "availability_issue": None,
         })
@@ -465,16 +524,77 @@ def read_record(patient: str, record_id: int, user=Depends(auth.current_user)):
     if not record:
         _audit_denied(patient, wallet)
         raise HTTPException(404, "Record not found in your approved categories.")
-    blob = storage.get(record["ref"])
+    try:
+        blob = storage.get(record["ref"])
+    except StorageObjectNotFound:
+        raise HTTPException(404, "Encrypted record is unavailable in storage.")
     if crypto.sha256_hex(blob) != record["hash"].removeprefix("0x"):
         raise HTTPException(500, "Record failed its integrity check.")
     try:
-        content = crypto.decrypt(blob, patient).decode("utf-8")
+        decoded = record_payload.decode_record(crypto.decrypt(blob, patient))
     except (InvalidTag, ValueError, UnicodeDecodeError):
         raise HTTPException(500, "Record could not be decrypted.")
     chain.log_access(patient, wallet, record_id, "RECORD_VIEWED")
     workflow.notify_record_access(patient, wallet, record_id)
-    return {**_record_metadata(record, patient), "content": content}
+    return {
+        **_record_metadata(record, patient),
+        "content": decoded["content"],
+        "attachment": decoded["attachment"],
+    }
+
+
+@app.get("/records/{patient}/{record_id}/attachment")
+def download_record_attachment(
+    patient: str, record_id: int, user=Depends(auth.current_user),
+):
+    _require_address(patient)
+    wallet = auth.linked_wallet(user)
+
+    if user["role"] == "patient":
+        _require_patient(user, patient)
+        rows = chain.get_own_records(patient)
+    elif user["role"] in ("clinician", "facility"):
+        rows = _scoped_records(wallet, patient)
+    else:
+        raise HTTPException(403, "This account cannot download record attachments.")
+
+    record = next((row for row in rows if row["id"] == record_id), None)
+    if not record:
+        if user["role"] in ("clinician", "facility"):
+            _audit_denied(patient, wallet)
+        raise HTTPException(404, "Record not found in your permitted records.")
+
+    try:
+        blob = storage.get(record["ref"])
+    except StorageObjectNotFound:
+        raise HTTPException(404, "Encrypted record is unavailable in storage.")
+
+    if crypto.sha256_hex(blob) != record["hash"].removeprefix("0x"):
+        raise HTTPException(500, "Record failed its integrity check.")
+
+    try:
+        decoded = record_payload.decode_record(crypto.decrypt(blob, patient))
+    except (InvalidTag, ValueError, UnicodeDecodeError):
+        raise HTTPException(500, "Record could not be decrypted.")
+
+    pdf_bytes = decoded.get("_attachment_bytes")
+    attachment = decoded.get("attachment")
+    if not pdf_bytes or not attachment:
+        raise HTTPException(404, "This record has no PDF attachment.")
+
+    if user["role"] in ("clinician", "facility"):
+        chain.log_access(patient, wallet, record_id, "ATTACHMENT_DOWNLOADED")
+        workflow.notify_record_access(patient, wallet, record_id)
+
+    filename = quote(attachment["filename"], safe="")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/records/{patient}/{record_id}/flags")

@@ -28,6 +28,24 @@ async function download(path: string): Promise<Blob> {
   return res.blob();
 }
 
+async function upload<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${getSession()?.token}`,
+    },
+    body: form,
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(data.detail ?? `Request failed (${res.status})`);
+  }
+
+  return data as T;
+}
+
 export const api = {
   nonce: (address: string) => call<{ message: string }>("/auth/nonce", { address }, false),
   login: (address: string, signature: string) => call<{ token: string }>("/auth/login", { address, signature }, false),
@@ -49,6 +67,27 @@ export const api = {
   requesterAudit: () => get<AuditEntry[]>("/requester/audit"),
   summary: (patient: string, question: string, topic?: string) =>
     call<Summary>("/agent/summary", { patient, question, topic }),
+    encryptRecordWithAttachment: (
+    patient: string,
+    content: string,
+    metadata: { title: string; category: RecordCategory; record_date: string },
+    file: File,
+  ) => {
+    const form = new FormData();
+    form.append("patient", patient);
+    form.append("content", content);
+    form.append("title", metadata.title);
+    form.append("category", metadata.category);
+    form.append("record_date", metadata.record_date);
+    form.append("file", file);
+
+    return upload<{ hash: string; ref: string }>(
+      "/records/encrypt-with-attachment",
+      form,
+    );
+  },
+  downloadRecordAttachment: (patient: string, recordId: number) =>
+    download(`/records/${patient}/${recordId}/attachment`),
   createAccessRequest: (body: {
     patient: string;
     purpose: string;
@@ -93,6 +132,12 @@ export type RecordMeta = {
   record_date: string;
   added_by: string;
   timestamp: number;
+  attachment?: RecordAttachment | null;
+};
+export type RecordAttachment = {
+  filename: string;
+  content_type: string;
+  size: number;
 };
 export type OwnerRecord = RecordMeta & {
   content: string;

@@ -406,3 +406,128 @@ def test_unreachable_model_is_503_not_500(client, monkeypatch):
     monkeypatch.setattr("app.main.agents.run_summary", boom)
     r = client.post("/agent/summary", json={"patient": P})
     assert r.status_code == 503 and "Ollama" in r.json()["detail"]
+
+
+def test_patient_can_upload_and_download_pdf_attachment(client, monkeypatch):
+    from app import record_payload
+
+    as_user(P, "patient")
+    stored = {}
+    monkeypatch.setattr(
+        "app.main.storage.put",
+        lambda blob: stored.setdefault("blob", blob) and "ehr/pdf-record",
+    )
+
+    pdf = b"%PDF-1.4\n% synthetic test PDF\n%%EOF"
+    response = client.post(
+        "/records/encrypt-with-attachment",
+        data={
+            "patient": P,
+            "content": "Synthetic consultation note.",
+            "title": "Consultation with attachment",
+            "category": "visit_notes",
+            "record_date": "2026-11-20",
+        },
+        files={"file": ("consultation.pdf", pdf, "application/pdf")},
+    )
+
+    assert response.status_code == 200, response.text
+    digest = response.json()["hash"]
+    decoded = record_payload.decode_record(crypto.decrypt(stored["blob"], P))
+    assert decoded["content"] == "Synthetic consultation note."
+    assert decoded["attachment"]["filename"] == "consultation.pdf"
+    assert decoded["_attachment_bytes"] == pdf
+
+    record = {
+        "id": 0,
+        "hash": digest,
+        "ref": "ehr/pdf-record",
+        "added_by": P,
+        "timestamp": 20,
+    }
+    monkeypatch.setattr("app.main.chain.get_own_records", lambda address: [record])
+    monkeypatch.setattr("app.main.storage.get", lambda ref: stored["blob"])
+
+    reviewed = client.get("/owner/records")
+    assert reviewed.status_code == 200
+    assert reviewed.json()[0]["attachment"]["filename"] == "consultation.pdf"
+    assert "_attachment_bytes" not in reviewed.text
+
+    downloaded = client.get(f"/records/{P}/0/attachment")
+    assert downloaded.status_code == 200
+    assert downloaded.content == pdf
+    assert downloaded.headers["content-type"] == "application/pdf"
+
+
+def test_pdf_upload_rejects_non_pdf_and_oversized_files(client, monkeypatch):
+    as_user(P, "patient")
+    form = {
+        "patient": P,
+        "content": "Synthetic note.",
+        "title": "Test attachment",
+        "category": "visit_notes",
+        "record_date": "2026-11-20",
+    }
+
+    invalid = client.post(
+        "/records/encrypt-with-attachment",
+        data=form,
+        files={"file": ("not-a-pdf.pdf", b"not a PDF", "application/pdf")},
+    )
+    assert invalid.status_code == 422
+
+    from app import record_payload
+    oversized = b"%PDF-" + (b"x" * record_payload.MAX_PDF_BYTES)
+    too_large = client.post(
+        "/records/encrypt-with-attachment",
+        data=form,
+        files={"file": ("large.pdf", oversized, "application/pdf")},
+    )
+    assert too_large.status_code == 413
+
+
+def test_clinician_pdf_download_respects_approved_categories(client, monkeypatch):
+    from app import record_payload
+
+    as_user(D, "clinician")
+    approve_scope(P, D, categories=("allergies",))
+    monkeypatch.setattr("app.main.chain.can_access", lambda *args: True)
+
+    allowed_pdf = b"%PDF-1.4\n% allowed synthetic PDF\n%%EOF"
+    restricted_pdf = b"%PDF-1.4\n% restricted synthetic PDF\n%%EOF"
+
+    allowed_blob, allowed_hash = crypto.encrypt(
+        record_payload.encode_record("Allergy note.", allowed_pdf, "allergy.pdf"), P,
+    )
+    restricted_blob, restricted_hash = crypto.encrypt(
+        record_payload.encode_record("Medication note.", restricted_pdf, "medication.pdf"), P,
+    )
+
+    workflow.save_record_metadata(
+        allowed_hash, P, "allergies", "Allergy record", "2026-11-20", D,
+    )
+    workflow.save_record_metadata(
+        restricted_hash, P, "medications", "Medication record", "2026-11-20", D,
+    )
+
+    records = [
+        {"id": 0, "hash": allowed_hash, "ref": "allowed", "added_by": D, "timestamp": 20},
+        {"id": 1, "hash": restricted_hash, "ref": "restricted", "added_by": D, "timestamp": 21},
+    ]
+    blobs = {"allowed": allowed_blob, "restricted": restricted_blob}
+    monkeypatch.setattr("app.main.chain.get_records", lambda *args: records)
+    monkeypatch.setattr("app.main.storage.get", lambda ref: blobs[ref])
+
+    audit = []
+    monkeypatch.setattr(
+        "app.main.chain.log_access",
+        lambda *args: audit.append(args) or "0xaudit",
+    )
+
+    allowed = client.get(f"/records/{P}/0/attachment")
+    assert allowed.status_code == 200
+    assert allowed.content == allowed_pdf
+    assert audit[-1][2:] == (0, "ATTACHMENT_DOWNLOADED")
+
+    restricted = client.get(f"/records/{P}/1/attachment")
+    assert restricted.status_code == 404

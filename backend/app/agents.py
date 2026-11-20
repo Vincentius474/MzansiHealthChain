@@ -3,7 +3,9 @@ change permissions or send arbitrary transactions; the only write is the audit e
 import json
 from dataclasses import dataclass, field
 
-from . import chain, crypto, llm
+from . import chain, crypto, llm, record_payload
+from pypdf import PdfReader
+from io import BytesIO
 from .storage import storage
 
 
@@ -40,7 +42,39 @@ def retrieval_agent(
         if crypto.sha256_hex(blob) != rec["hash"]:  # integrity check against on-chain hash
             trace.add(f"RetrievalAgent: record {rec['id']} FAILED integrity check, skipped")
             continue
-        docs.append({"id": rec["id"], "text": crypto.decrypt(blob, patient).decode()})
+        try:
+            decrypted = crypto.decrypt(blob, patient)
+            payload = record_payload.decode_record(decrypted)
+            text = payload["content"]
+
+            attachment = payload.get("_attachment_bytes")
+            if attachment:
+                try:
+                    pdf = PdfReader(BytesIO(attachment))
+                    pdf_text = "\n".join(
+                        page.extract_text() or "" for page in pdf.pages
+                    ).strip()
+                    if pdf_text:
+                        text += "\n\n[Attached PDF text]\n" + pdf_text
+                        trace.add(
+                            f"RetrievalAgent: extracted text from PDF on record {rec['id']}"
+                        )
+                    else:
+                        trace.add(
+                            f"RetrievalAgent: PDF on record {rec['id']} has no extractable text"
+                        )
+                except Exception as error:
+                    trace.add(
+                        f"RetrievalAgent: PDF text extraction failed for record {rec['id']} "
+                        f"({type(error).__name__})"
+                    )
+
+            docs.append({"id": rec["id"], "text": text})
+        except Exception as error:
+            trace.add(
+                f"RetrievalAgent: record {rec['id']} could not be decoded, skipped "
+                f"({type(error).__name__})"
+            )
     trace.add(f"RetrievalAgent: {len(docs)} verified record(s) decrypted in memory")
     return docs
 

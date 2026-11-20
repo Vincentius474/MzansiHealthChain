@@ -139,24 +139,88 @@ export default function ClinicianPage() {
     }, "Record loaded and audited.");
   }
 
+  async function downloadAttachment() {
+    if (!authorizedPatient || !openedRecord?.attachment) return;
+
+    const record = openedRecord;
+
+    await run(`download-${record.id}`, async () => {
+      const blob = await api.downloadRecordAttachment(
+        authorizedPatient,
+        record.id,
+      );
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = record.attachment!.filename;
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "PDF attachment downloaded and access audited.");
+  }
+
+
   async function addNote(event: FormEvent) {
     event.preventDefault();
-    if (!authorizedPatient || !signer) return setError("Load a patient with active approved access first.");
-    if (!title.trim() || !note.trim()) return setError("Enter a title and clinical note.");
+
+    if (!authorizedPatient || !signer) {
+      return setError("Load a patient with active approved access and connect your wallet.");
+    }
+
+    const linkedWallet = session?.address;
+
+    if (!linkedWallet) {
+      return setError("Your session has no linked wallet. Reconnect your registered wallet.");
+    }
+
+    if (!title.trim() || !note.trim()) {
+      return setError("Enter a title and clinical note.");
+    }
+
     await run("add-note", async () => {
+      if (!signer.provider) {
+        throw new Error("Wallet provider is unavailable. Reconnect your wallet.");
+      }
+
+      const signerAddress = await signer.getAddress();
+
+      if (signerAddress.toLowerCase() !== linkedWallet.toLowerCase()) {
+        throw new Error("Connected wallet does not match your registered clinician wallet.");
+      }
+
+      const access = new Contract(ADDR.access, ACCESS_ABI, signer);
+      const permitted = await access.canAccess(signerAddress, authorizedPatient);
+
+      if (!permitted) {
+        throw new Error("Your wallet does not have active on-chain access to this patient.");
+      }
+
       const encrypted = await api.encryptRecord(authorizedPatient, note, {
         title: title.trim(),
         category: noteCategory,
         record_date: recordDate,
       });
-      const access = new Contract(ADDR.access, ACCESS_ABI, signer);
-      await (await access.addRecord(authorizedPatient, encrypted.hash, encrypted.ref)).wait();
+
+      await (await access.addRecord(
+        authorizedPatient,
+        encrypted.hash,
+        encrypted.ref,
+      )).wait();
+
       setTitle("");
       setNote("");
+
       const updatedRecords = await api.records(authorizedPatient);
       setRecords(updatedRecords);
+      setOpenedRecord(null);
     }, "The encrypted clinical note was appended to the patient's record.");
   }
+
 
   async function getSummary(event: FormEvent) {
     event.preventDefault();
@@ -276,6 +340,25 @@ export default function ClinicianPage() {
             <h3>{openedRecord.title}</h3>
             <p>{CATEGORY_LABELS[openedRecord.category]} · {openedRecord.record_date}</p>
             <pre>{openedRecord.content}</pre>
+            {openedRecord.attachment && (
+              <div className="panel">
+                <strong>Attached PDF</strong>
+                <p>{openedRecord.attachment.filename}</p>
+                <p className="muted">
+                  {(openedRecord.attachment.size / 1024).toFixed(1)} KB
+                </p>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy !== null}
+                  onClick={() => void downloadAttachment()}
+                >
+                  {busy === `download-${openedRecord.id}`
+                    ? "Downloading…"
+                    : "Download PDF"}
+                </button>
+              </div>
+            )}
             {(flags[openedRecord.id] ?? []).length > 0 && (
               <div className="notice">
                 <strong>Owner flagged this record for review</strong>
@@ -336,6 +419,12 @@ export default function ClinicianPage() {
             <article className="panel">
               <p className="summary">{result.summary}</p>
               {result.key_points?.length ? <ul>{result.key_points.map((point, index) => <li key={index}>{point}</li>)}</ul> : null}
+              {result.record_ids?.length ? (
+                  <p className="muted">
+                    Source record IDs: {result.record_ids.join(", ")}
+                  </p>
+                ) : null
+              }
               {result.external_references?.length ? (
                 <>
                   <strong>General references</strong>

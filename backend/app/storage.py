@@ -21,6 +21,9 @@ class Storage:
     def get(self, ref: str) -> bytes:
         raise NotImplementedError
 
+    def delete(self, ref: str) -> None:
+        raise NotImplementedError
+
 
 class LocalStorage(Storage):
     def __init__(self, root: str | Path):
@@ -48,6 +51,11 @@ class LocalStorage(Storage):
             )
 
         return path.read_bytes()
+
+    def delete(self, ref: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{32}", ref):
+            raise ValueError("Invalid storage reference")
+        (self.root / ref).unlink(missing_ok=True)
 
 
 class R2Storage(Storage):
@@ -110,6 +118,11 @@ class R2Storage(Storage):
                 ) from error
 
             raise
+
+
+    def delete(self, ref: str) -> None:
+        self._validate_ref(ref)
+        self.client.delete_object(Bucket=self.bucket_name, Key=ref)
 
 
 def _create_storage() -> Storage:
