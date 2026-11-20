@@ -10,6 +10,7 @@ from typing import Any
 from . import crypto
 from .config import settings
 
+from web3.exceptions import TimeExhausted
 
 DB_PATH = Path(settings.data_dir) / "workflow.sqlite3"
 
@@ -111,6 +112,25 @@ def _connect():
             CREATE INDEX IF NOT EXISTS record_flags_record
             ON record_flags(patient, record_id, created_at)
             """,
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                patient TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                record_id BIGINT,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                tx_hash TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at BIGINT NOT NULL,
+                updated_at BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS audit_events_status_created
+            ON audit_events(status, created_at)
+            """,
         )
 
         try:
@@ -187,6 +207,22 @@ def _connect():
 
         CREATE INDEX IF NOT EXISTS record_flags_record
         ON record_flags(patient, record_id, created_at);
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id TEXT PRIMARY KEY,
+            patient TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            record_id INTEGER,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            tx_hash TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS audit_events_status_created
+        ON audit_events(status, created_at);
         """
     )
 
@@ -626,6 +662,229 @@ def list_flags(
             ).fetchall()
 
     return [_flag(row) for row in rows]
+
+
+def create_audit_event(
+    patient: str,
+    provider: str,
+    record_id: int | None,
+    action: str,
+) -> str:
+    """Persist an audit event before attempting an on-chain submission."""
+    event_id = uuid.uuid4().hex
+    now = int(time.time())
+
+    with _connect() as db:
+        _execute(
+            db,
+            """INSERT INTO audit_events
+               (id, patient, provider, record_id, action, status,
+                attempts, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (
+                event_id,
+                patient.lower(),
+                provider.lower(),
+                record_id,
+                action,
+                now,
+                now,
+            ),
+        )
+
+    return event_id
+
+
+def mark_audit_confirmed(event_id: str, tx_hash: str) -> bool:
+    """Mark an event confirmed only after a successful chain submission."""
+    now = int(time.time())
+
+    with _connect() as db:
+        cursor = _execute(
+            db,
+            """UPDATE audit_events
+               SET status = 'confirmed',
+                   tx_hash = ?,
+                   last_error = NULL,
+                   attempts = attempts + CASE WHEN tx_hash IS NULL THEN 1 ELSE 0 END,
+                   updated_at = ?
+               WHERE id = ? AND status != 'confirmed'""",
+            (tx_hash, now, event_id),
+        )
+
+    return cursor.rowcount == 1
+
+def mark_audit_submitted(event_id: str, tx_hash: str) -> bool:
+    """Persist the transaction hash while its receipt is pending."""
+    now = int(time.time())
+
+    with _connect() as db:
+        cursor = _execute(
+            db,
+            """UPDATE audit_events
+               SET tx_hash = ?,
+                   last_error = NULL,
+                   attempts = attempts + CASE WHEN tx_hash IS NULL THEN 1 ELSE 0 END,
+                   updated_at = ?
+               WHERE id = ? AND status = 'pending'""",
+            (tx_hash, now, event_id),
+        )
+
+    return cursor.rowcount == 1
+
+def mark_audit_failed(event_id: str, error: str) -> bool:
+    """Retain a failed submission for later investigation or retry."""
+    now = int(time.time())
+    safe_error = str(error)[:500]
+
+    with _connect() as db:
+        cursor = _execute(
+            db,
+            """UPDATE audit_events
+               SET status = 'failed',
+                   last_error = ?,
+                   attempts = attempts + CASE WHEN tx_hash IS NULL THEN 1 ELSE 0 END,
+                   updated_at = ?
+               WHERE id = ? AND status != 'confirmed'""",
+            (safe_error, now, event_id),
+        )
+
+    return cursor.rowcount == 1
+
+
+def list_audit_events(
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List audit event metadata, optionally filtered by status."""
+    limit = max(1, min(limit, 500))
+
+    with _connect() as db:
+        if status is None:
+            rows = _execute(
+                db,
+                """SELECT * FROM audit_events
+                   ORDER BY created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = _execute(
+                db,
+                """SELECT * FROM audit_events
+                   WHERE status = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (status, limit),
+            ).fetchall()
+
+    return [dict(row) for row in rows]
+
+def mark_audit_pending_error(event_id: str, error: str) -> bool:
+    """Retain pending status when the transaction outcome is unknown."""
+    now = int(time.time())
+
+    with _connect() as db:
+        cursor = _execute(
+            db,
+            """UPDATE audit_events
+               SET last_error = ?,
+                   updated_at = ?
+               WHERE id = ? AND status = 'pending' AND tx_hash IS NOT NULL""",
+            (str(error)[:500], now, event_id),
+        )
+
+    return cursor.rowcount == 1
+
+
+def submit_audit_event(
+    patient: str,
+    provider: str,
+    record_id: int | None,
+    action: str,
+) -> dict[str, Any]:
+    """Persist an audit event and track its blockchain submission."""
+
+    event_id = create_audit_event(
+        patient, provider, record_id, action
+    )
+
+    from . import chain
+
+    # Step 1: Submit the transaction.
+    try:
+        tx_hash = chain.log_access(
+            patient,
+            provider,
+            record_id if record_id is not None else chain.NO_RECORD,
+            action,
+        )
+    except Exception as error:
+        # Submission failed: no transaction hash was received.
+        mark_audit_failed(event_id, type(error).__name__)
+
+        return {
+            "event_id": event_id,
+            "status": "failed",
+            "tx_hash": None,
+        }
+
+    # Step 2: Persist the transaction hash immediately.
+    if not mark_audit_submitted(event_id, tx_hash):
+        raise RuntimeError(
+            "Transaction was submitted, but its hash could not be persisted."
+        )
+
+    # Step 3: Wait for the transaction receipt.
+    try:
+        receipt = chain.w3.eth.wait_for_transaction_receipt(
+            tx_hash,
+            timeout=120,
+        )
+
+    except TimeExhausted:
+        # Transaction outcome is not yet known.
+        # Keep the event pending and preserve its hash.
+        return {
+            "event_id": event_id,
+            "status": "pending",
+            "tx_hash": tx_hash,
+        }
+
+    except Exception as error:
+        # RPC/receipt lookup failed. The transaction may still have succeeded.
+        # Do not incorrectly mark an uncertain transaction as failed.
+        mark_audit_pending_error(
+            event_id,
+            type(error).__name__,
+        )
+
+        return {
+            "event_id": event_id,
+            "status": "pending",
+            "tx_hash": tx_hash,
+        }
+
+    # Step 4: Handle a definitive transaction revert.
+    if receipt.status != 1:
+        mark_audit_failed(event_id, "TransactionReverted")
+
+        return {
+            "event_id": event_id,
+            "status": "failed",
+            "tx_hash": tx_hash,
+        }
+
+    # Step 5: Persist confirmation only after successful mining.
+    if not mark_audit_confirmed(event_id, tx_hash):
+        raise RuntimeError(
+            "Blockchain transaction succeeded, but audit confirmation "
+            "could not be persisted."
+        )
+
+    return {
+        "event_id": event_id,
+        "status": "confirmed",
+        "tx_hash": tx_hash,
+    }
 
 
 def _notify(

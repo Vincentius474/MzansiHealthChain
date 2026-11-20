@@ -150,12 +150,27 @@ def _record_metadata(record: dict, patient: str) -> dict:
 
 def _audit_denied(patient: str, provider: str) -> None:
     try:
-        chain.log_access(patient, provider, chain.NO_RECORD, "ACCESS_DENIED")
+        workflow.submit_audit_event(
+            patient,
+            provider,
+            None,
+            "ACCESS_DENIED",
+        )
     except Exception as error:
-       	logger.exception("Could not audit denied access for provider %s", provider,)
+        logger.exception(
+            "Could not persist denied-access audit event for provider %s: %s",
+            provider,
+            type(error).__name__,
+        )
+
     try:
         workflow.notify_denied_access(patient, provider)
     except Exception as error:
+        logger.warning(
+            "Could not notify owner of denied access by %s: %s",
+            provider,
+            type(error).__name__,
+        )
         logger.warning("Could not notify owner of denied access by %s: %s", provider, type(error).__name__)
 
 
@@ -316,8 +331,8 @@ async def summary(req: SummaryReq, user=Depends(auth.current_user)):
             req.topic,
             allowed_record_ids={row["id"] for row in rows},
         )
-        for row in rows:
-            workflow.notify_record_access(req.patient, wallet, row["id"])
+        for record_id in result.get("record_ids", []):
+            workflow.notify_record_access(req.patient, wallet, record_id)
         return result
     except agents.AccessDenied as e:
         raise HTTPException(403, str(e))
@@ -504,12 +519,24 @@ def export_owner_records(user=Depends(auth.current_user)):
 def list_records(patient: str, user=Depends(auth.current_user)):
     if user["role"] not in ("clinician", "facility"):
         raise HTTPException(403, "providers only")
+
     wallet = auth.linked_wallet(user)
     _require_address(patient)
+
+    # Enforce active on-chain consent and approved record categories.
     rows = _scoped_records(wallet, patient)
     records = [_record_metadata(row, patient) for row in rows]
+
+    # Persist and attempt an audit event for each listed record.
     for row in rows:
-        chain.log_access(patient, wallet, row["id"], "RECORD_LISTED")
+        workflow.submit_audit_event(
+            patient,
+            wallet,
+            row["id"],
+            "RECORD_LISTED",
+        )
+
+    # Preserve the existing frontend contract: RecordMeta[].
     return records
 
 
@@ -534,7 +561,12 @@ def read_record(patient: str, record_id: int, user=Depends(auth.current_user)):
         decoded = record_payload.decode_record(crypto.decrypt(blob, patient))
     except (InvalidTag, ValueError, UnicodeDecodeError):
         raise HTTPException(500, "Record could not be decrypted.")
-    chain.log_access(patient, wallet, record_id, "RECORD_VIEWED")
+    workflow.submit_audit_event(
+        patient,
+        wallet,
+        record_id,
+        "RECORD_VIEWED",
+    )
     workflow.notify_record_access(patient, wallet, record_id)
     return {
         **_record_metadata(record, patient),
@@ -583,7 +615,12 @@ def download_record_attachment(
         raise HTTPException(404, "This record has no PDF attachment.")
 
     if user["role"] in ("clinician", "facility"):
-        chain.log_access(patient, wallet, record_id, "ATTACHMENT_DOWNLOADED")
+        workflow.submit_audit_event(
+            patient,
+            wallet,
+            record_id,
+            "ATTACHMENT_DOWNLOADED",
+        )
         workflow.notify_record_access(patient, wallet, record_id)
 
     filename = quote(attachment["filename"], safe="")

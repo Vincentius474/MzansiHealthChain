@@ -136,7 +136,7 @@ export default function ClinicianPage() {
       const recordFlags = await api.recordFlags(authorizedPatient, recordId);
       setOpenedRecord(record);
       setFlags((current) => ({ ...current, [recordId]: recordFlags }));
-    }, "Record loaded and audited.");
+    }, "Record loaded. Audit submission status has been recorded.");
   }
 
   async function downloadAttachment() {
@@ -161,7 +161,7 @@ export default function ClinicianPage() {
       link.remove();
 
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }, "PDF attachment downloaded and access audited.");
+    }, "PDF attachment downloaded. Audit submission status has been recorded.");
   }
 
 
@@ -425,6 +425,32 @@ export default function ClinicianPage() {
                   </p>
                 ) : null
               }
+              {result.audit_tx?.length ? (
+                <div className="audit-results">
+                  <strong>Blockchain audit submissions</strong>
+                  <ul>
+                    {result.audit_tx.map((event) => (
+                      <li key={event.event_id}>
+                        Record audit:{" "}
+                        <span className={`chip ${
+                          event.status === "confirmed"
+                            ? "ok"
+                            : event.status === "failed"
+                              ? "bad"
+                              : ""
+                        }`}>
+                          {event.status.toUpperCase()}
+                        </span>
+                        {event.tx_hash ? (
+                          <span className="muted">
+                            {" "}Transaction: <code>{short(event.tx_hash)}</code>
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {result.external_references?.length ? (
                 <>
                   <strong>General references</strong>

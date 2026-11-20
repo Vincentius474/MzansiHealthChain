@@ -408,6 +408,101 @@ def test_unreachable_model_is_503_not_500(client, monkeypatch):
     assert r.status_code == 503 and "Ollama" in r.json()["detail"]
 
 
+def test_summary_uses_only_authorized_records_and_returns_audit_status(
+    client, monkeypatch
+):
+    as_user(D, "clinician")
+    approve_scope(P, D, categories=("allergies",))
+
+    monkeypatch.setattr(
+        "app.main.chain.can_access",
+        lambda *args: True,
+    )
+
+    records = [
+        {
+            "id": 0,
+            "hash": "ab" * 32,
+            "ref": "allergy-record",
+            "added_by": D,
+            "timestamp": 10,
+        },
+        {
+            "id": 1,
+            "hash": "cd" * 32,
+            "ref": "medication-record",
+            "added_by": D,
+            "timestamp": 11,
+        },
+    ]
+
+    monkeypatch.setattr(
+        "app.main.chain.get_records",
+        lambda *args: records,
+    )
+
+    workflow.save_record_metadata(
+        "ab" * 32, P, "allergies", "Allergy record", "2026-01-01", D
+    )
+    workflow.save_record_metadata(
+        "cd" * 32, P, "medications", "Medication record", "2026-01-01", D
+    )
+
+    captured = {}
+
+    async def fake_summary(
+        provider, patient, question, topic, allowed_record_ids=None
+    ):
+        captured["provider"] = provider
+        captured["patient"] = patient
+        captured["allowed_record_ids"] = allowed_record_ids
+
+        return {
+            "summary": "Synthetic allergy summary.",
+            "key_points": ["Penicillin allergy"],
+            "record_ids": [0],
+            "audit_tx": [
+                {
+                    "event_id": "test-event-1",
+                    "status": "failed",
+                    "tx_hash": None,
+                }
+            ],
+            "trace": ["Synthetic test trace"],
+        }
+
+    monkeypatch.setattr(
+        "app.main.agents.run_summary",
+        fake_summary,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "notify_record_access",
+        lambda *args: None,
+    )
+
+    response = client.post(
+        "/agent/summary",
+        json={
+            "patient": P,
+            "question": "Summarize relevant allergies.",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert captured["provider"] == D.lower()
+    assert captured["patient"] == P
+    assert captured["allowed_record_ids"] == {0}
+
+    assert body["summary"] == "Synthetic allergy summary."
+    assert body["record_ids"] == [0]
+    assert body["audit_tx"][0]["event_id"] == "test-event-1"
+    assert body["audit_tx"][0]["status"] == "failed"
+
+
 def test_patient_can_upload_and_download_pdf_attachment(client, monkeypatch):
     from app import record_payload
 

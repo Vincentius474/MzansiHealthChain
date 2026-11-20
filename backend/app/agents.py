@@ -3,7 +3,7 @@ change permissions or send arbitrary transactions; the only write is the audit e
 import json
 from dataclasses import dataclass, field
 
-from . import chain, crypto, llm, record_payload
+from . import chain, crypto, llm, record_payload, workflow
 from pypdf import PdfReader
 from io import BytesIO
 from .storage import storage
@@ -104,20 +104,47 @@ async def external_info_agent(topic: str, trace: Trace) -> list[dict]:
     return results
 
 
-def audit_agent(patient: str, provider: str, record_ids: list[int], action: str, trace: Trace) -> list[str]:
-    hashes = [chain.log_access(patient, provider, rid, action) for rid in (record_ids or [0])]
-    trace.add(f"AuditAgent: {len(hashes)} audit event(s) written to Avalanche")
-    return hashes
 
+def audit_agent(
+    patient: str,
+    provider: str,
+    record_ids: list[int],
+    action: str,
+    trace: Trace,
+) -> list[dict]:
+    """Persist and submit audit events without hiding submission failures."""
+    results = []
+
+    for record_id in record_ids or [None]:
+        result = workflow.submit_audit_event(
+            patient, provider, record_id, action
+        )
+        results.append(result)
+
+        trace.add(
+            f"AuditAgent: {action} for record {record_id}: "
+            f"{result['status']}"
+        )
+
+    return results
 
 def audit_denied(patient: str, provider: str, trace: Trace):
-    """Denied attempts are audited too. A logging failure must not change the 403."""
+    """Persist denied attempts without changing the access-denied response."""
     try:
-        chain.log_access(patient, provider, chain.NO_RECORD, "ACCESS_DENIED")
-        trace.add("AuditAgent: denied attempt written to Avalanche")
-    except Exception as e:  # noqa: BLE001
-        trace.add(f"AuditAgent: could not log denied attempt ({type(e).__name__})")
-
+        result = workflow.submit_audit_event(
+            patient,
+            provider,
+            None,
+            "ACCESS_DENIED",
+        )
+        trace.add(
+            f"AuditAgent: denied attempt audit status: {result['status']}"
+        )
+    except Exception as error:
+        trace.add(
+            f"AuditAgent: could not persist denied attempt "
+            f"({type(error).__name__})"
+        )
 
 async def run_summary(
     provider: str,
@@ -137,5 +164,20 @@ async def run_summary(
         return {"summary": "No verified records available.", "trace": trace.steps}
     result = await analysis_agent(question, docs, trace)
     external = await external_info_agent(topic, trace) if topic else []
-    tx = audit_agent(patient, provider, [d["id"] for d in docs], "SUMMARY_REQUESTED", trace)
-    return {**result, "external_references": external, "audit_tx": tx, "trace": trace.steps}
+    used_record_ids = [d["id"] for d in docs]
+
+    tx = audit_agent(
+        patient,
+        provider,
+        used_record_ids,
+        "SUMMARY_REQUESTED",
+        trace,
+    )
+
+    return {
+        **result,
+        "record_ids": used_record_ids,
+        "external_references": external,
+        "audit_tx": tx,
+        "trace": trace.steps,
+    }

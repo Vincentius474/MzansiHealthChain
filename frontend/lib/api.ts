@@ -119,7 +119,11 @@ export type Summary = {
   key_points?: string[];
   record_ids?: number[];
   external_references?: { title: string; url: string; content: string }[];
-  audit_tx?: string[];
+  audit_tx?: {
+    event_id: string;
+    status: "pending" | "confirmed" | "failed";
+    tx_hash: string | null;
+  }[];
   trace: string[];
 };
 
