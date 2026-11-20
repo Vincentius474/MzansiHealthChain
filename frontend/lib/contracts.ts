@@ -30,7 +30,13 @@ export const ACCESS_ABI = [
   "function getOwnRecords() view returns (tuple(bytes32 ciphertextHash, string storageRef, address addedBy, uint64 timestamp)[])",
 ];
 export const AUDIT_ABI = [
+  "function owner() view returns (address)",
+  "function isLogger(address) view returns (bool)",
+  "function setLogger(address who, bool allowed)",
+  "function transferOwnership(address newOwner)",
+  "function logAccess(address patient, address provider, uint256 recordId, bytes32 actionHash)",
   "event AccessLogged(address indexed patient, address indexed provider, uint256 indexed recordId, bytes32 actionHash, uint64 timestamp)",
+  "event LoggerSet(address indexed logger, bool allowed)",
+  "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)",
 ];
-
 export const ROLE = { None: 0, Patient: 1, Clinician: 2, Facility: 3 } as const;
