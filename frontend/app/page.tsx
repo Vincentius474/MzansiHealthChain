@@ -8,7 +8,7 @@ export default function Home() {
         <span><strong>MzansiHealthChain</strong><small>Patient-controlled health records</small></span>
       </div>
       <div className="hero">
-        <h1>Your health records. Your say on who sees them.</h1>
+        <h1>Your health history. Your permission. Your control.</h1>
         <p>
           Sign in to manage your health information or request access as a clinician.
           Wallet approval is handled securely after sign-in.
