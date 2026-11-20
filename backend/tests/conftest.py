@@ -18,5 +18,5 @@ os.environ.update({
 @pytest.fixture(autouse=True)
 def isolate_workflow_database(tmp_path, monkeypatch):
     from app import workflow
-
     monkeypatch.setattr(workflow, "DB_PATH", tmp_path / "workflow.sqlite3")
+    monkeypatch.setattr(workflow.settings, "database_url", "")

@@ -25,7 +25,7 @@ Deployed contracts:
 |---|---|
 | PatientRegistry | `0x132F4C91dDE9b5aff8499950bFc0D44DAF333Ed7` |
 | ConsentManagement | `0x975bf7eC0EDf7FFd91248C75dA7700F8C236a0f2` |
-| AccessControl | `0x22d84f4F8fbAe2d6782EE0cc27cD1Cc02ceE271` |
+| AccessControl | `0x22d84f4F8fbAe2d678F9c9626A0778304366CC76` |
 | AuditLog | `0x4f5Dd3c21E4f602b7f7c33d06928E8A7bE876E88` |
 
 The contracts have been deployed and verified on Fuji. Run `forge test` from the `contracts/` directory before making contract changes.
@@ -107,7 +107,7 @@ Set these environment variables in Vercel:
 | `NEXT_PUBLIC_API_URL` | Your Render backend URL |
 | `NEXT_PUBLIC_REGISTRY_ADDR` | `0x132F4C91dDE9b5aff8499950bFc0D44DAF333Ed7` |
 | `NEXT_PUBLIC_CONSENT_ADDR` | `0x975bf7eC0EDf7FFd91248C75dA7700F8C236a0f2` |
-| `NEXT_PUBLIC_ACCESS_ADDR` | `0x22d84f4F8fbAe2d6782EE0cc27cD1Cc02ceE271` |
+| `NEXT_PUBLIC_ACCESS_ADDR` | `0x22d84f4F8fbAe2d678F9c9626A0778304366CC76` |
 | `NEXT_PUBLIC_AUDIT_ADDR` | `0x4f5Dd3c21E4f602b7f7c33d06928E8A7bE876E88` |
 | `NEXT_PUBLIC_CHAIN_ID` | `43113` |
 | `NEXT_PUBLIC_RPC_URL` | `https://api.avax-test.network/ext/bc/C/rpc` |

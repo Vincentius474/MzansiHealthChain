@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # Local default preserves the existing backend/data directory.
     # On Render, set DATA_DIR=/var/data.
     data_dir: str = str(Path(__file__).resolve().parents[1] / "data")
+    database_url: str = ""
+
+    # Cloudflare R2 object storage
+    storage_backend: str = "local"
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = "mzansihealthchain-records"
 
     demo_auth_enabled: bool = False
 
