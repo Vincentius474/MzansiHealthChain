@@ -152,7 +152,7 @@ def _audit_denied(patient: str, provider: str) -> None:
     try:
         chain.log_access(patient, provider, chain.NO_RECORD, "ACCESS_DENIED")
     except Exception as error:
-        logger.warning("Could not audit denied access for %s: %s", provider, type(error).__name__)
+       	logger.exception("Could not audit denied access for provider %s", provider,)
     try:
         workflow.notify_denied_access(patient, provider)
     except Exception as error:
