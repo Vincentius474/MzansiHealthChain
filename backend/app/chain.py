@@ -8,6 +8,8 @@ relayer = w3.eth.account.from_key(settings.relayer_private_key)
 _REG = [
     {"name": "roleOf", "type": "function", "stateMutability": "view",
      "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "uint8"}]},
+    {"name": "admin", "type": "function", "stateMutability": "view",
+     "inputs": [], "outputs": [{"name": "", "type": "address"}]},
 ]
 _CON = [
     {"name": "consentExpiry", "type": "function", "stateMutability": "view",
@@ -29,6 +31,8 @@ _ACL = [
          {"name": "addedBy", "type": "address"}, {"name": "timestamp", "type": "uint64"}]}]},
 ]
 _AUDIT = [
+    {"name": "isLogger", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "bool"}]},
     {"name": "logAccess", "type": "function", "stateMutability": "nonpayable",
      "inputs": [{"name": "patient", "type": "address"}, {"name": "provider", "type": "address"},
                 {"name": "recordId", "type": "uint256"}, {"name": "actionHash", "type": "bytes32"}],

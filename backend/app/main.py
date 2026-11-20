@@ -31,6 +31,38 @@ app.add_middleware(
 )
 logger = logging.getLogger(__name__)
 
+@app.on_event("startup")
+def verify_blockchain_configuration():
+    """Log safe, read-only blockchain configuration diagnostics."""
+    try:
+        if not chain.w3.is_connected():
+            logger.error("CHAIN DIAGNOSTIC: RPC connection FAILED")
+            return
+
+        chain_id = chain.w3.eth.chain_id
+        relayer_address = Web3.to_checksum_address(chain.relayer.address)
+
+        registry_admin = chain.registry.functions.admin().call()
+        relayer_authorized = chain.audit.functions.isLogger(
+            relayer_address
+        ).call()
+
+        logger.info("CHAIN DIAGNOSTIC: RPC connected")
+        logger.info("CHAIN DIAGNOSTIC: Chain ID = %s", chain_id)
+        logger.info("CHAIN DIAGNOSTIC: Relayer address = %s", relayer_address)
+        logger.info("CHAIN DIAGNOSTIC: Registry admin = %s", registry_admin)
+        logger.info(
+            "CHAIN DIAGNOSTIC: Relayer authorised by AuditLog = %s",
+            relayer_authorized,
+        )
+        logger.info(
+            "CHAIN DIAGNOSTIC: Expected Fuji network = %s",
+            chain_id == 43113,
+        )
+
+    except Exception:
+        logger.exception("CHAIN DIAGNOSTIC: Verification failed")
+
 
 class NonceReq(BaseModel):
     address: str
