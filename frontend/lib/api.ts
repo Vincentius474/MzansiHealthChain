@@ -65,8 +65,8 @@ export const api = {
   exportOwnerRecords: () => download("/owner/export"),
   audit: (patient: string) => get<AuditEntry[]>(`/audit/${patient}`),
   requesterAudit: () => get<AuditEntry[]>("/requester/audit"),
-  summary: (patient: string, question: string, topic?: string) =>
-    call<Summary>("/agent/summary", { patient, question, topic }),
+  summaryContext: (patient: string) =>
+    call<SummaryContext>("/agent/summary-context", { patient }),
     encryptRecordWithAttachment: (
     patient: string,
     content: string,
@@ -120,6 +120,17 @@ export type Summary = {
   record_ids?: number[];
   external_references?: { title: string; url: string; content: string }[];
   audit_tx?: {
+    event_id: string;
+    status: "pending" | "confirmed" | "failed";
+    tx_hash: string | null;
+  }[];
+  trace: string[];
+};
+
+export type SummaryContext = {
+  records: { id: number; text: string }[];
+  record_ids: number[];
+  audit_tx: {
     event_id: string;
     status: "pending" | "confirmed" | "failed";
     tx_hash: string | null;

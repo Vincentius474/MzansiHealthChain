@@ -1,4 +1,3 @@
-import httpx
 import json
 import logging
 import time
@@ -316,28 +315,51 @@ async def encrypt_record_with_attachment(
     return {"hash": "0x" + digest, "ref": ref}
 
 
-@app.post("/agent/summary")
-async def summary(req: SummaryReq, user=Depends(auth.current_user)):
+@app.post("/agent/summary-context")
+def summary_context(req: SummaryReq, user=Depends(auth.current_user)):
     if user["role"] not in ("clinician", "facility"):
         raise HTTPException(403, "providers only")
+
     wallet = auth.linked_wallet(user)
     _require_address(req.patient)
     rows = _scoped_records(wallet, req.patient)
-    try:
-        result = await agents.run_summary(
-            wallet,
-            req.patient,
-            req.question,
-            req.topic,
-            allowed_record_ids={row["id"] for row in rows},
-        )
-        for record_id in result.get("record_ids", []):
-            workflow.notify_record_access(req.patient, wallet, record_id)
-        return result
-    except agents.AccessDenied as e:
-        raise HTTPException(403, str(e))
-    except httpx.HTTPError:
-        raise HTTPException(503, "The AI model isn't reachable. Start Ollama and check OLLAMA_URL and OLLAMA_MODEL.")
+    allowed_ids = {row["id"] for row in rows}
+
+    trace = agents.Trace()
+    docs = agents.retrieval_agent(
+        wallet,
+        req.patient,
+        trace,
+        allowed_record_ids=allowed_ids,
+    )
+
+    record_ids = [doc["id"] for doc in docs]
+
+    if not record_ids:
+        return {
+            "records": [],
+            "record_ids": [],
+            "audit_tx": [],
+            "trace": trace.steps,
+        }
+
+    audit_tx = agents.audit_agent(
+        req.patient,
+        wallet,
+        record_ids,
+        "SUMMARY_REQUESTED",
+        trace,
+    )
+
+    for record_id in record_ids:
+        workflow.notify_record_access(req.patient, wallet, record_id)
+
+    return {
+        "records": docs,
+        "record_ids": record_ids,
+        "audit_tx": audit_tx,
+        "trace": trace.steps,
+    }
 
 
 @app.get("/auth/me")

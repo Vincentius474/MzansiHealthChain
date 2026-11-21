@@ -1,4 +1,3 @@
-import httpx
 import pytest
 import time
 from eth_account import Account
@@ -194,7 +193,8 @@ def test_audit_trail_is_patient_only_and_own_only(client, monkeypatch):
 def test_invalid_address_is_422(client):
     as_user(D, "clinician")
     assert client.get("/records/not-an-address").status_code == 422
-    assert client.post("/agent/summary", json={"patient": "nope"}).status_code == 422
+    assert client.post("/agent/summary-context", json={"patient": "nope"}).status_code == 422
+    assert client.post("/agent/summary", json={"patient": P}).status_code == 404
 
 
 def test_encrypt_requires_consent(client, monkeypatch):
@@ -394,21 +394,7 @@ def test_owner_can_flag_record_and_author_can_review_flag(client, monkeypatch):
     assert flags.status_code == 200 and flags.json()[0]["reason"] == "The visit date is incorrect."
 
 
-def test_unreachable_model_is_503_not_500(client, monkeypatch):
-    as_user(D, "clinician")
-    approve_scope(P, D)
-    monkeypatch.setattr("app.main.chain.can_access", lambda *args: True)
-    monkeypatch.setattr("app.main.chain.get_records", lambda *args: [])
-
-    async def boom(*a, **k):
-        raise httpx.ConnectError("ollama down")
-
-    monkeypatch.setattr("app.main.agents.run_summary", boom)
-    r = client.post("/agent/summary", json={"patient": P})
-    assert r.status_code == 503 and "Ollama" in r.json()["detail"]
-
-
-def test_summary_uses_only_authorized_records_and_returns_audit_status(
+def test_summary_context_uses_only_authorized_records_and_returns_audit_status(
     client, monkeypatch
 ):
     as_user(D, "clinician")
@@ -450,39 +436,27 @@ def test_summary_uses_only_authorized_records_and_returns_audit_status(
 
     captured = {}
 
-    async def fake_summary(
-        provider, patient, question, topic, allowed_record_ids=None
-    ):
+    def fake_retrieval(provider, patient, trace, allowed_record_ids=None):
         captured["provider"] = provider
         captured["patient"] = patient
         captured["allowed_record_ids"] = allowed_record_ids
+        return [{"id": 0, "text": "Synthetic allergy record."}]
 
-        return {
-            "summary": "Synthetic allergy summary.",
-            "key_points": ["Penicillin allergy"],
-            "record_ids": [0],
-            "audit_tx": [
-                {
-                    "event_id": "test-event-1",
-                    "status": "failed",
-                    "tx_hash": None,
-                }
-            ],
-            "trace": ["Synthetic test trace"],
-        }
-
+    audit_calls = []
+    notifications = []
+    monkeypatch.setattr("app.main.agents.retrieval_agent", fake_retrieval)
     monkeypatch.setattr(
-        "app.main.agents.run_summary",
-        fake_summary,
+        "app.main.agents.audit_agent",
+        lambda *args: audit_calls.append(args) or [
+            {"event_id": "test-event-1", "status": "confirmed"}
+        ],
     )
     monkeypatch.setattr(
-        workflow,
-        "notify_record_access",
-        lambda *args: None,
+        workflow, "notify_record_access", lambda *args: notifications.append(args)
     )
 
     response = client.post(
-        "/agent/summary",
+        "/agent/summary-context",
         json={
             "patient": P,
             "question": "Summarize relevant allergies.",
@@ -496,11 +470,40 @@ def test_summary_uses_only_authorized_records_and_returns_audit_status(
     assert captured["provider"] == D.lower()
     assert captured["patient"] == P
     assert captured["allowed_record_ids"] == {0}
-
-    assert body["summary"] == "Synthetic allergy summary."
+    assert body["records"] == [{"id": 0, "text": "Synthetic allergy record."}]
     assert body["record_ids"] == [0]
     assert body["audit_tx"][0]["event_id"] == "test-event-1"
-    assert body["audit_tx"][0]["status"] == "failed"
+    assert body["audit_tx"][0]["status"] == "confirmed"
+    assert audit_calls[0][0:4] == (P, D.lower(), [0], "SUMMARY_REQUESTED")
+    assert notifications == [(P, D.lower(), 0)]
+
+
+def test_summary_context_with_no_records_skips_audit_and_notifications(
+    client, monkeypatch
+):
+    as_user(D, "clinician")
+    approve_scope(P, D)
+    monkeypatch.setattr("app.main.chain.can_access", lambda *args: True)
+    monkeypatch.setattr("app.main.chain.get_records", lambda *args: [])
+    monkeypatch.setattr(
+        "app.main.agents.audit_agent",
+        lambda *args: pytest.fail("No records should be audited"),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "notify_record_access",
+        lambda *args: pytest.fail("No record access should be notified"),
+    )
+
+    response = client.post("/agent/summary-context", json={"patient": P})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "records": [],
+        "record_ids": [],
+        "audit_tx": [],
+        "trace": ["RetrievalAgent: 0 verified record(s) decrypted in memory"],
+    }
 
 
 def test_patient_can_upload_and_download_pdf_attachment(client, monkeypatch):
