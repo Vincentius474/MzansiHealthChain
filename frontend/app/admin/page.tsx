@@ -216,7 +216,7 @@ export default function AdminPage() {
   }
 
   return (
-    <main className="page">
+    <main className="page admin-page">
       <h1>MzansiHealthChain Administration</h1>
 
       <p className="muted">

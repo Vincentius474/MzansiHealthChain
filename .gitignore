@@ -16,3 +16,5 @@ contracts/lib/
 contracts/broadcast/
 contracts/deployments/*.json
 !contracts/deployments/.gitkeep
+clear
+q

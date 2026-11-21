@@ -22,7 +22,7 @@ export default function Shell({ session, title, children }: { session: Session; 
         <Link href="/settings">Settings</Link>
         <button className="link" onClick={() => { clearSession(); router.push("/"); }}>Sign out</button>
       </header>
-      <main className="page">
+      <main className="page app-page">
         <h1>{title}</h1>
         {children}
       </main>

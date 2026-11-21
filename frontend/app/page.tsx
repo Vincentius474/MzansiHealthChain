@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="page signin-page">
+    <main className="page signin-page landing-page">
       <div className="signin-brand">
         <img className="platform-logo signin-logo" src="/logo.png" alt="" />
         <span><strong>MzansiHealthChain</strong><small>Patient-controlled health records</small></span>
